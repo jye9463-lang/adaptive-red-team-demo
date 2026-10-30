@@ -14,8 +14,21 @@ import pandas as pd
 import requests
 import streamlit as st
 
-API_URL = "http://127.0.0.1:8765"
-TIMEOUT = 10
+LOCAL_API_URL = "http://127.0.0.1:8765"
+
+def cloud_setting(key):
+    """Read server-side environment or Streamlit secrets, never from visitors."""
+    value = os.environ.get(key, "")
+    if value:
+        return str(value).strip()
+    try:
+        return str(st.secrets.get(key, "")).strip()
+    except (FileNotFoundError, RuntimeError, KeyError):
+        return ""
+
+API_URL = cloud_setting("ADAPTIVE_API_URL").rstrip("/")
+API_TOKEN = cloud_setting("ADAPTIVE_API_TOKEN")
+TIMEOUT = 90  # Render free services may take a while to wake from sleep.
 
 st.set_page_config(page_title="Adaptive Red Team | AI 평가", page_icon="🛡️", layout="wide")
 
@@ -29,7 +42,11 @@ def internal_client():
     return TestClient(fastapi_app)
 
 
-internal_client()
+if not API_URL:
+    internal_client()
+elif not API_TOKEN:
+    st.error("ADAPTIVE_API_URL이 설정되었지만 ADAPTIVE_API_TOKEN이 없습니다. Streamlit Secrets를 확인하세요.")
+    st.stop()
 
 
 def get_admin_password():
@@ -62,7 +79,16 @@ st.markdown("""
 
 
 def api(method, path, **kwargs):
-    # Use FastAPI's ASGI interface directly instead of localhost networking.
+    # Hosted mode uses the authenticated external Render API.
+    # No secrets are sent to browsers; requests run on the Streamlit server.
+    if API_URL:
+        response = requests.request(method, API_URL + path,
+                                    headers={"X-API-Key": API_TOKEN},
+                                    timeout=TIMEOUT, **kwargs)
+        response.raise_for_status()
+        return response.json()
+
+    # Fallback offline demo uses the FastAPI app in this process.
     try:
         response = internal_client().request(method, path, **kwargs)
     except Exception as exc:
@@ -82,7 +108,7 @@ with st.sidebar:
     st.write("각각 테스트 → 취약점 결과 합치기 → 조합별 점수 계산")
     try:
         api("GET", "/")
-        st.success("평가 엔진 연결됨")
+        st.success("평가 엔진 연결됨" + (" (Render)" if API_URL else " (내부 데모)"))
     except requests.RequestException:
         st.error("내부 평가 엔진 연결 실패")
 
