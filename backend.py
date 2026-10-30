@@ -269,3 +269,7 @@ from combo_eval_api import router as combo_router
 app.include_router(combo_router)    
 from combo_eval_api import seed_demo
 seed_demo()
+
+# Read-only server-to-server access to teammate's AI execution API.
+from team_bridge import router as team_router
+app.include_router(team_router)
