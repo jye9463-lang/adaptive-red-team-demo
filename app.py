@@ -341,7 +341,7 @@ with old_tab:
 
 with team_tab:
     st.subheader("⑤ 팀원 AI 실행 서버 연결")
-    st.write("팀원 서버의 모델·시나리오·실행 내역을 **읽기 전용**으로 확인합니다. 실험 시작/취소 기능과 성능 평가 자동 반영은 아직 연결되지 않았습니다.")
+    st.caption("팀원 API v0.2.0: 모델 조회 → 모의 테스트 실행 → 진행 상태/로그/보고서 조회. 실제 공격 모드(live)는 이 화면에서 사용하지 않습니다.")
     if st.button("🔍 팀원 서버 연결 확인", key="check_team_connection"):
         try:
             status = api("GET", "/team/status")
@@ -351,28 +351,82 @@ with team_tab:
                 st.warning(status.get("message", "연결에 실패했습니다."))
         except requests.RequestException as exc:
             st.error(f"연결 확인 실패: {exc}")
-    st.caption("연결을 사용하려면 Render 환경 변수 TEAM_API_BASE_URL, TEAM_API_BEARER_TOKEN이 필요합니다. 인증 토큰은 웹사이트에 입력하지 마세요.")
+    st.caption("Render에 TEAM_API_BASE_URL과 TEAM_API_BEARER_TOKEN을 설정해야 합니다. 인증 토큰을 브라우저 입력창에 넣지 마세요.")
+
     if can_write:
-        if st.button("📡 팀원 모델·시나리오·실행 내역 불러오기", key="fetch_team_readonly"):
+        if st.button("📡 모델·시나리오·이전 실행 조회", key="fetch_team_readonly"):
             for label, path in [
-                ("AI 모델 목록", "/team/models"),
-                ("테스트 시나리오 목록", "/team/scenarios"),
-                ("AI 실행 내역", "/team/executions"),
+                ("실제 모델 식별자 확인", "/team/models"),
+                ("테스트 시나리오", "/team/scenarios"),
+                ("최근 실행 내역", "/team/executions"),
             ]:
-                with st.expander(label, expanded=False):
+                st.markdown(f"**{label}**")
+                try:
+                    st.json(api("GET", path))
+                except requests.RequestException as exc:
+                    st.error(f"조회 실패: {exc}")
+
+        st.markdown("#### 🧪 팀원 AI 모의 테스트 시작")
+        st.info("이 기능은 mock 모드만 지원합니다. 먼저 위 모델 목록을 조회한 뒤 반환된 실제 모델 식별자를 입력하세요.")
+        with st.form("team_mock_execution_form"):
+            scenario = st.selectbox("시나리오", ["orders-v1", "web-access-v1"])
+            environment = st.selectbox("테스트 환경", ["vulnerable", "fixed"])
+            model_names_text = st.text_input("AI 모델 식별자 (쉼표로 구분, 2~3개)", value="GPT, Claude")
+            target_id = st.text_input("실습 환경 ID (선택)", value="")
+            seconds = st.number_input("최대 실행 시간(초)", min_value=0.05, max_value=300.0, value=30.0)
+            requests_limit = st.number_input("최대 HTTP 요청", min_value=1, max_value=50, value=8)
+            model_calls = st.number_input("최대 AI 호출", min_value=1, max_value=30, value=8)
+            send = st.form_submit_button("▶️ mock 테스트 실행", type="primary")
+        if send:
+            model_names = [s.strip() for s in model_names_text.split(",") if s.strip()]
+            if not 2 <= len(model_names) <= 3 or len(model_names) != len(set(model_names)):
+                st.error("서로 다른 AI 모델 2~3개를 입력해 주세요.")
+            else:
+                payload = {
+                    "mode": "mock", "scenario": scenario,
+                    "environment": environment, "collaboration": "independent",
+                    "information": "gray-box", "tools": ["http"], "state_changes": False,
+                    "agents": [{"model": name} for name in model_names],
+                    "budget": {
+                        "seconds": seconds, "requests": requests_limit,
+                        "model_calls": model_calls, "tokens": 100000,
+                        "max_output_tokens": 1000,
+                    },
+                }
+                if target_id.strip():
+                    payload["target_id"] = target_id.strip()
+                try:
+                    created = api("POST", "/team/executions", json=payload)
+                    st.success("팀원 서버에 mock 실행 요청을 전달했습니다.")
+                    st.json(created)
+                    if isinstance(created, dict):
+                        eid = created.get("execution_id") or created.get("id")
+                        if eid is not None:
+                            st.session_state["last_team_execution_id"] = str(eid)
+                except requests.HTTPError as exc:
+                    message = exc.response.text if exc.response is not None else str(exc)
+                    st.error(f"요청 실패: {message}")
+                except requests.RequestException as exc:
+                    st.error(f"요청 실패: {exc}")
+
+        st.markdown("#### 📋 실행 상태와 보고서")
+        recent_id = st.session_state.get("last_team_execution_id", "")
+        execution_id = st.text_input("조회할 실행 ID", value=recent_id, key="team_execution_id").strip()
+        if execution_id:
+            if st.button("🔄 실행 상태·로그·보고서 조회", key="fetch_team_details"):
+                for title, endpoint in [
+                    ("실행 상태", f"/team/executions/{execution_id}"),
+                    ("실행 로그", f"/team/executions/{execution_id}/logs"),
+                    ("AI 실행 보고서", f"/team/executions/{execution_id}/report"),
+                ]:
+                    st.markdown(f"**{title}**")
                     try:
-                        st.json(api("GET", path))
+                        st.json(api("GET", endpoint))
                     except requests.RequestException as exc:
-                        st.error(f"불러오기 실패: {exc}")
-        execution_id = st.text_input("개별 실행 ID", key="team_execution_id").strip()
-        if st.button("📄 실행 보고서 가져오기", key="fetch_team_report") and execution_id:
-            try:
-                report = api("GET", f"/team/executions/{execution_id}/report")
-                st.json(report)
-            except requests.RequestException as exc:
-                st.error(f"실행 보고서 불러오기 실패: {exc}")
+                        st.info(f"{title} 조회 실패 또는 아직 결과 없음: {exc}")
+            st.caption("보고서 JSON 형식은 팀원 API 문서에 정의되지 않아 지금은 원문을 보여줍니다. 자동 성능 평가에는 실제 보고서 예시가 필요합니다.")
     else:
-        st.info("모델 목록과 개별 실행 결과 조회는 관리자 로그인 후 표시됩니다. 공개 데모에서 팀원 결과를 노출하지 않습니다.")
+        st.info("실행 요청과 결과 조회는 관리자만 사용할 수 있습니다. Streamlit의 ADAPTIVE_ADMIN_PASSWORD를 설정하고 로그인하세요.")
 
 
 st.divider()
