@@ -165,8 +165,9 @@ else:
     batch = None
     ranking = []
 
-rank_tab, input_tab, report_tab, old_tab = st.tabs([
-    "🏆 AI 조합 순위", "🧾 팀원 AI 결과 등록", "📋 취약점 보고서 및 로그", "🗂️ 테스트 기록"
+rank_tab, input_tab, report_tab, old_tab, team_tab = st.tabs([
+    "🏆 AI 조합 순위", "🧾 팀원 AI 결과 등록", "📋 취약점 보고서 및 로그",
+    "🗂️ 테스트 기록", "🔌 팀원 AI 서버 연결"
 ])
 
 with rank_tab:
@@ -337,6 +338,42 @@ with old_tab:
     except (requests.RequestException, KeyError, ValueError) as exc:
         st.info(f"이전 실험 기록을 불러올 수 없습니다: {exc}")
     st.caption("실제 실험 결과를 장기 보관하려면 외부 관리형 DB를 연결해야 합니다.")
+
+with team_tab:
+    st.subheader("⑤ 팀원 AI 실행 서버 연결")
+    st.write("팀원 서버의 모델·시나리오·실행 내역을 **읽기 전용**으로 확인합니다. 실험 시작/취소 기능과 성능 평가 자동 반영은 아직 연결되지 않았습니다.")
+    if st.button("🔍 팀원 서버 연결 확인", key="check_team_connection"):
+        try:
+            status = api("GET", "/team/status")
+            if status.get("reachable"):
+                st.success("팀원 AI 서버에 연결되었습니다.")
+            else:
+                st.warning(status.get("message", "연결에 실패했습니다."))
+        except requests.RequestException as exc:
+            st.error(f"연결 확인 실패: {exc}")
+    st.caption("연결을 사용하려면 Render 환경 변수 TEAM_API_BASE_URL, TEAM_API_BEARER_TOKEN이 필요합니다. 인증 토큰은 웹사이트에 입력하지 마세요.")
+    if can_write:
+        if st.button("📡 팀원 모델·시나리오·실행 내역 불러오기", key="fetch_team_readonly"):
+            for label, path in [
+                ("AI 모델 목록", "/team/models"),
+                ("테스트 시나리오 목록", "/team/scenarios"),
+                ("AI 실행 내역", "/team/executions"),
+            ]:
+                with st.expander(label, expanded=False):
+                    try:
+                        st.json(api("GET", path))
+                    except requests.RequestException as exc:
+                        st.error(f"불러오기 실패: {exc}")
+        execution_id = st.text_input("개별 실행 ID", key="team_execution_id").strip()
+        if st.button("📄 실행 보고서 가져오기", key="fetch_team_report") and execution_id:
+            try:
+                report = api("GET", f"/team/executions/{execution_id}/report")
+                st.json(report)
+            except requests.RequestException as exc:
+                st.error(f"실행 보고서 불러오기 실패: {exc}")
+    else:
+        st.info("모델 목록과 개별 실행 결과 조회는 관리자 로그인 후 표시됩니다. 공개 데모에서 팀원 결과를 노출하지 않습니다.")
+
 
 st.divider()
 st.caption("Adaptive Red Team · 승인된 실습 환경의 평가 결과 전용 · AI 실행 및 실제 보안 테스트는 팀원 시스템에서 별도로 수행")
