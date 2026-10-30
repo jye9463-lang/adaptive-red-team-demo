@@ -8,8 +8,6 @@ import json
 import os
 import hmac
 import tempfile
-import threading
-import time
 from pathlib import Path
 
 import pandas as pd
@@ -21,30 +19,17 @@ TIMEOUT = 10
 
 st.set_page_config(page_title="Adaptive Red Team | AI 평가", page_icon="🛡️", layout="wide")
 
-# Streamlit Community Cloud hosts the UI only. Start the existing FastAPI
-# benchmark engine inside the same host on loopback, never on a public port.
+# Host the real benchmark inside Streamlit without opening a second web port.
+# This avoids local TCP/worker hangs on cloud hosting.
 @st.cache_resource(show_spinner=False)
-def start_local_api():
+def internal_client():
     os.environ.setdefault("ADAPTIVE_DB_PATH", str(Path(tempfile.gettempdir()) / "adaptive_red_team_demo.db"))
-    from backend import app as fastapi_app  # noqa: F401: includes synthetic seed
-    import uvicorn
-
-    config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=8765, log_level="error")
-    server = uvicorn.Server(config)
-    worker = threading.Thread(target=server.run, name="local-benchmark-api", daemon=True)
-    worker.start()
-    for _ in range(75):
-        try:
-            response = requests.get(API_URL + "/", timeout=0.3)
-            if response.ok:
-                return worker
-        except requests.RequestException:
-            pass
-        time.sleep(0.1)
-    raise RuntimeError("내부 평가 서버를 시작하지 못했습니다. 앱 로그를 확인하세요.")
+    from backend import app as fastapi_app
+    from fastapi.testclient import TestClient
+    return TestClient(fastapi_app)
 
 
-start_local_api()
+internal_client()
 
 
 def get_admin_password():
@@ -53,7 +38,8 @@ def get_admin_password():
         return value
     try:
         return str(st.secrets.get("ADAPTIVE_ADMIN_PASSWORD", ""))
-    except (FileNotFoundError, RuntimeError, KeyError):
+    except Exception:
+        # Secrets are optional for public read-only demo access.
         return ""
 
 
@@ -76,8 +62,16 @@ st.markdown("""
 
 
 def api(method, path, **kwargs):
-    response = requests.request(method, API_URL + path, timeout=TIMEOUT, **kwargs)
-    response.raise_for_status()
+    # Use FastAPI's ASGI interface directly instead of localhost networking.
+    try:
+        response = internal_client().request(method, path, **kwargs)
+    except Exception as exc:
+        raise requests.ConnectionError(f"내부 평가 엔진 실행 실패: {exc}") from exc
+    if response.status_code >= 400:
+        error_response = requests.Response()
+        error_response.status_code = response.status_code
+        error_response._content = response.content
+        raise requests.HTTPError(f"HTTP {response.status_code}: {response.text}", response=error_response)
     return response.json()
 
 
